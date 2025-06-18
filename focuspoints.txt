@@ -1,0 +1,33 @@
+Issues with pdf_rag:
+
+1) Chunk formation: Based on length only: Uneccessary info will reduce its similarity score
+2)Matched Sentence: Only one is retrieved. While in the human output a whole chunk is.
+3)Embedding model should be improved
+4)Extracting matching sentence from the chunk
+5)Other options than cosine similarity
+
+
+
+Q> Is efficiency as important?
+> Why are more relevant ranked lower in some cases?
+
+
+
+
+17-06-25
+>Tested the semantic_chunking: Bit of improvement
+>Used larger spacy model
+>Used better Sentence Transformer
+
+>Noticeable improvement but following issues:
+
+1. Still irrelevant sections
+2. Subsidiary headings not mentioned in matched sentence
+3. Suppose a relevant chunk exists with both Vision and Mission mentioned- either only a bit or separately extracted
+4. Page Numbers ar all wrong
+
+>Targets today:
+1. Look for an LLM integratino solution
+2. Solve 3 completely
+3. Reduce irrelevant sections
+
