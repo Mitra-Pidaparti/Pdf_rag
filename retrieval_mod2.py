@@ -9,7 +9,8 @@ from rank_bm25 import BM25Okapi
 from sklearn.feature_extraction.text import TfidfVectorizer
 import spacy
 import numpy as np
-from collections import defaultdict
+import requests
+from transformers import pipeline
 
 # -------------------------
 # Initialize Chroma Client & Model
@@ -57,13 +58,11 @@ def preprocess_query(query):
     return query_rep
 
 # -------------------------
-# Helper: Retrieve Context
+# Helper: Get Full Chunk
 # -------------------------
-def get_context_from_indices(matched_index, all_sentences, context_range):
-    """Get surrounding context sentences based on the matched sentence."""
-    start = max(0, matched_index - context_range)
-    end = min(len(all_sentences), matched_index + context_range + 1)
-    return " ".join(all_sentences[start:end])
+def get_full_chunk(metadata):
+    """Get the full chunk text from metadata."""
+    return metadata.get("chunk", "")
 
 # -------------------------
 # Sentence Splitter with Improved Context Handling
@@ -91,11 +90,7 @@ def build_bm25_index(collection_name):
     page_numbers = [meta.get("page", "Unknown") for meta in data["metadatas"]]
     sentence_indices = [meta.get("sentence_indices", "") for meta in data["metadatas"]]
     doc_ids = data.get("ids", ["unknown"] * len(all_sentences))
-    
-    # Extract heading information
-    parent_headings = [meta.get("parent_heading", "") for meta in data["metadatas"]]
-    grandparent_headings = [meta.get("grandparent_heading", "") for meta in data["metadatas"]]
-    heading_paths = [meta.get("heading_path", "") for meta in data["metadatas"]]
+    metadatas = data["metadatas"]  # Keep full metadata for chunk retrieval
 
     # Improved tokenization with lemmatization
     tokenized = []
@@ -107,7 +102,7 @@ def build_bm25_index(collection_name):
         tokenized.append(tokens)
     
     bm25 = BM25Okapi(tokenized)
-    return bm25, all_sentences, page_numbers, sentence_indices, doc_ids, collection, tokenized, parent_headings, grandparent_headings, heading_paths
+    return bm25, all_sentences, page_numbers, sentence_indices, doc_ids, collection, tokenized, metadatas
 
 # -------------------------
 # TF-IDF Indexing with Improvements
@@ -119,11 +114,7 @@ def build_tfidf_index(collection_name):
     page_numbers = [meta.get("page", "Unknown") for meta in data["metadatas"]]
     sentence_indices = [meta.get("sentence_indices", "") for meta in data["metadatas"]]
     doc_ids = data.get("ids", ["unknown"] * len(all_sentences))
-    
-    # Extract heading information
-    parent_headings = [meta.get("parent_heading", "") for meta in data["metadatas"]]
-    grandparent_headings = [meta.get("grandparent_heading", "") for meta in data["metadatas"]]
-    heading_paths = [meta.get("heading_path", "") for meta in data["metadatas"]]
+    metadatas = data["metadatas"]  # Keep full metadata for chunk retrieval
 
     # Process text for TF-IDF
     processed_texts = []
@@ -144,7 +135,7 @@ def build_tfidf_index(collection_name):
     )
     
     tfidf_matrix = vectorizer.fit_transform(processed_texts)
-    return vectorizer, tfidf_matrix, all_sentences, page_numbers, sentence_indices, doc_ids, collection, processed_texts, parent_headings, grandparent_headings, heading_paths
+    return vectorizer, tfidf_matrix, all_sentences, page_numbers, sentence_indices, doc_ids, collection, processed_texts, metadatas
 
 # -------------------------
 # Maximum Marginal Relevance for Diversity
@@ -225,10 +216,10 @@ def process_query_for_hybrid_search(query_rep, tokenized_docs, vectorizer, proce
     return bm25_query_terms, tfidf_query_terms, dense_query
 
 # -------------------------
-# Context-Aware Reranking
+# Context-Aware Reranking (Modified to work with chunks)
 # -------------------------
 def context_aware_reranking(results, query):
-    """Rerank results based on context relevance to query."""
+    """Rerank results based on chunk relevance to query."""
     if not results:
         return results
     
@@ -237,72 +228,33 @@ def context_aware_reranking(results, query):
     query_key_tokens = set([token.lemma_.lower() for token in query_doc 
                             if not token.is_stop and not token.is_punct])
     
-    # Score each result based on context match
+    # Score each result based on chunk match
     for result in results:
-        context = result["context"]
-        context_doc = nlp(context)
+        chunk = result["chunk"]
+        chunk_doc = nlp(chunk)
         
         # Calculate key token overlap
-        context_key_tokens = set([token.lemma_.lower() for token in context_doc 
-                                 if not token.is_stop and not token.is_punct])
-        token_overlap = len(query_key_tokens.intersection(context_key_tokens))
+        chunk_key_tokens = set([token.lemma_.lower() for token in chunk_doc 
+                               if not token.is_stop and not token.is_punct])
+        token_overlap = len(query_key_tokens.intersection(chunk_key_tokens))
         
         # Calculate named entity match
         query_entities = set([ent.text.lower() for ent in query_doc.ents])
-        context_entities = set([ent.text.lower() for ent in context_doc.ents])
-        entity_match = len(query_entities.intersection(context_entities))
+        chunk_entities = set([ent.text.lower() for ent in chunk_doc.ents])
+        entity_match = len(query_entities.intersection(chunk_entities))
         
         # Calculate adjusted score
-        context_score = token_overlap + entity_match * 2  # Entities matter more
+        chunk_score = token_overlap + entity_match * 2  # Entities matter more
         
-        # Update score with context relevance
-        result["rerank_score"] = result.get("score", 0) * (1 + 0.2 * context_score)
+        # Update score with chunk relevance
+        result["rerank_score"] = result.get("score", 0) * (1 + 0.2 * chunk_score)
     
     # Sort by reranked score
     results.sort(key=lambda x: x.get("rerank_score", 0), reverse=True)
     return results
 
 # -------------------------
-# Group Results by Heading
-# -------------------------
-def group_results_by_heading(results):
-    """Group results that share the same heading path."""
-    heading_groups = defaultdict(list)
-    
-    for result in results:
-        heading_path = result.get("heading_path", "")
-        parent_heading = result.get("parent_heading", "")
-        
-        # Use heading_path if available, otherwise use parent_heading
-        group_key = heading_path if heading_path else parent_heading
-        if not group_key:
-            group_key = "No Heading"
-        
-        heading_groups[group_key].append(result)
-    
-    # Sort groups by the best score in each group
-    sorted_groups = []
-    for heading, group_results in heading_groups.items():
-        # Sort results within the group by score
-        group_results.sort(key=lambda x: x.get("fused_score", x.get("rerank_score", x.get("score", 0))), reverse=True)
-        
-        # Calculate group score as the best score in the group
-        best_score = group_results[0].get("fused_score", group_results[0].get("rerank_score", group_results[0].get("score", 0)))
-        
-        sorted_groups.append({
-            "heading": heading,
-            "results": group_results,
-            "best_score": best_score,
-            "result_count": len(group_results)
-        })
-    
-    # Sort groups by best score
-    sorted_groups.sort(key=lambda x: x["best_score"], reverse=True)
-    
-    return sorted_groups
-
-# -------------------------
-# Reciprocal Rank Fusion with Heading Awareness
+# Reciprocal Rank Fusion
 # -------------------------
 def reciprocal_rank_fusion(result_lists, k=60):
     """Combine multiple result lists using Reciprocal Rank Fusion."""
@@ -335,7 +287,7 @@ def reciprocal_rank_fusion(result_lists, k=60):
     return fused_results
 
 # -------------------------
-# Enhanced Semantic Search
+# Enhanced Semantic Search (Modified to return chunks)
 # -------------------------
 def enhanced_semantic_search(query, collection, query_embedding, top_k=10):
     """Perform enhanced semantic search with reranking."""
@@ -380,9 +332,6 @@ def enhanced_semantic_search(query, collection, query_embedding, top_k=10):
         chunk = meta["chunk"]
         page = meta["page"]
         docname = meta["document"]
-        parent_heading = meta.get("parent_heading", "")
-        grandparent_heading = meta.get("grandparent_heading", "")
-        heading_path = meta.get("heading_path", "")
         
         # Split into sentences for better context identification
         sentences = split_text_into_sentences(chunk)
@@ -397,43 +346,31 @@ def enhanced_semantic_search(query, collection, query_embedding, top_k=10):
         best_sent_idx = torch.argmax(sentence_scores).item()
         matched_sentence = sentences[best_sent_idx]
         
-        # Extract sentence indices from metadata
-        sentence_indices_str = meta.get("sentence_indices", "")
-        sentence_indices = list(map(int, sentence_indices_str.split(","))) if sentence_indices_str else []
-        
-        matched_global_idx = sentence_indices[best_sent_idx] if best_sent_idx < len(sentence_indices) else -1
-        
-        # Get expanded context
-        context = get_context_from_indices(best_sent_idx, sentences, context_range=3)
-        
         semantic_results.append({
             "matched_sentence": matched_sentence,
-            "context": context,
+            "chunk": chunk,  # Store full chunk instead of context
             "page": page,
             "document": docname,
             "score": sentence_scores[best_sent_idx].item(),
-            "source": "Dense Embedding (MMR)",
-            "parent_heading": parent_heading,
-            "grandparent_heading": grandparent_heading,
-            "heading_path": heading_path
+            "source": "Dense Embedding (MMR)"
         })
     
     return semantic_results
 
 # -------------------------
-# Improved Hybrid Search with Heading Grouping
+# Improved Hybrid Search (Modified to return chunks)
 # -------------------------
 def improved_hybrid_search(query, collection_name, top_k=5, context_range=3):
-    """Flexible hybrid search with heading-aware grouping."""
+    """Flexible hybrid search without hardcoded query expansions."""
     if not query.strip():
         return json.dumps({"error": "Empty query"}, indent=4)
     
     # Process query
     query_rep = preprocess_query(query)
     
-    # Prepare indices with heading information
-    bm25, all_sentences, bm25_pages, bm25_sentence_indices, bm25_doc_ids, collection, tokenized_docs, bm25_parent_headings, bm25_grandparent_headings, bm25_heading_paths = build_bm25_index(collection_name)
-    vectorizer, tfidf_matrix, _, tfidf_pages, tfidf_sentence_indices, tfidf_doc_ids, _, processed_texts, tfidf_parent_headings, tfidf_grandparent_headings, tfidf_heading_paths = build_tfidf_index(collection_name)
+    # Prepare indices
+    bm25, all_sentences, bm25_pages, bm25_sentence_indices, bm25_doc_ids, collection, tokenized_docs, bm25_metadatas = build_bm25_index(collection_name)
+    vectorizer, tfidf_matrix, _, tfidf_pages, tfidf_sentence_indices, tfidf_doc_ids, _, processed_texts, tfidf_metadatas = build_tfidf_index(collection_name)
     
     # Process query for each retrieval method
     bm25_query_terms, tfidf_query_terms, dense_query = process_query_for_hybrid_search(
@@ -467,7 +404,6 @@ def improved_hybrid_search(query, collection_name, top_k=5, context_range=3):
         "tfidf": [],
         "dense": []
     }
-    
     # Process BM25 results
     for i, idx in enumerate(top_bm25):
         if idx >= len(all_sentences):
@@ -486,29 +422,19 @@ def improved_hybrid_search(query, collection_name, top_k=5, context_range=3):
         best_sent_idx = torch.argmax(sentence_scores).item()
         matched_sentence = sentences[best_sent_idx]
         
-        # Extract sentence indices
-        sentence_indices = []
-        if bm25_sentence_indices[idx]:
-            try:
-                sentence_indices = list(map(int, bm25_sentence_indices[idx].split(",")))
-            except:
-                sentence_indices = []
-        
-        matched_global_idx = sentence_indices[best_sent_idx] if best_sent_idx < len(sentence_indices) else -1
-        context = get_context_from_indices(best_sent_idx, sentences, context_range)
+        # Get full chunk from metadata
+        full_chunk = get_full_chunk(bm25_metadatas[idx])
         
         all_results["bm25"].append({
             "matched_sentence": matched_sentence,
-            "context": context,
+            "chunk": full_chunk,  # Store full chunk instead of context
             "page": bm25_pages[idx],
             "document": bm25_doc_ids[idx] if idx < len(bm25_doc_ids) else collection_name,
             "score": bm25_scores[idx],
-            "source": "BM25",
-            "parent_heading": bm25_parent_headings[idx] if idx < len(bm25_parent_headings) else "",
-            "grandparent_heading": bm25_grandparent_headings[idx] if idx < len(bm25_grandparent_headings) else "",
-            "heading_path": bm25_heading_paths[idx] if idx < len(bm25_heading_paths) else ""
+            "source": "BM25"
         })
     
+
     # Process TF-IDF results
     for i, idx in enumerate(top_tfidf):
         if idx >= len(all_sentences):
@@ -527,30 +453,19 @@ def improved_hybrid_search(query, collection_name, top_k=5, context_range=3):
         best_sent_idx = torch.argmax(sentence_scores).item()
         matched_sentence = sentences[best_sent_idx]
         
-        # Extract sentence indices
-        sentence_indices = []
-        if tfidf_sentence_indices[idx]:
-            try:
-                sentence_indices = list(map(int, tfidf_sentence_indices[idx].split(",")))
-            except:
-                sentence_indices = []
-        
-        matched_global_idx = sentence_indices[best_sent_idx] if best_sent_idx < len(sentence_indices) else -1
-        context = get_context_from_indices(best_sent_idx, sentences, context_range)
+        # Get full chunk from metadata
+        full_chunk = get_full_chunk(tfidf_metadatas[idx])
         
         all_results["tfidf"].append({
             "matched_sentence": matched_sentence,
-            "context": context, 
+            "chunk": full_chunk,  # Store full chunk instead of context
             "page": tfidf_pages[idx],
             "document": tfidf_doc_ids[idx] if idx < len(tfidf_doc_ids) else collection_name,
             "score": tfidf_scores[idx],
-            "source": "TF-IDF",
-            "parent_heading": tfidf_parent_headings[idx] if idx < len(tfidf_parent_headings) else "",
-            "grandparent_heading": tfidf_grandparent_headings[idx] if idx < len(tfidf_grandparent_headings) else "",
-            "heading_path": tfidf_heading_paths[idx] if idx < len(tfidf_heading_paths) else ""
+            "source": "TF-IDF"
         })
     
-    # Add dense results directly (they already have heading information)
+    # Add dense results directly
     all_results["dense"] = dense_results
     
     # Apply context-aware reranking to each result set
@@ -560,130 +475,170 @@ def improved_hybrid_search(query, collection_name, top_k=5, context_range=3):
     # Combine results using reciprocal rank fusion
     fused_results = reciprocal_rank_fusion(all_results)
     
-    # Remove duplicates (based on context similarity)
-    seen_contexts = set()
+    # Remove duplicates (based on chunk similarity)
+    seen_chunks = set()
     unique_results = []
     
     for result in fused_results:
-        # Create a simplified representation of the context
-        context_simplified = ' '.join(re.findall(r'\b\w+\b', result["context"].lower()))
-        context_hash = hash(context_simplified)
+        # Create a simplified representation of the chunk
+        chunk_simplified = ' '.join(re.findall(r'\b\w+\b', result["chunk"].lower()))
+        chunk_hash = hash(chunk_simplified)
         
-        if context_hash not in seen_contexts:
-            seen_contexts.add(context_hash)
+        if chunk_hash not in seen_chunks:
+            seen_chunks.add(chunk_hash)
             unique_results.append(result)
     
-    # Group results by heading
-    grouped_results = group_results_by_heading(unique_results)
-    
-    # Flatten grouped results while preserving heading information
-    final_results = []
-    for group in grouped_results:
-        if len(group["results"]) > 1:
-            # Multiple results under same heading - group them
-            grouped_entry = {
-                "heading": group["heading"],
-                "result_count": group["result_count"],
-                "best_score": group["best_score"],
-                "grouped_results": group["results"][:top_k],  # Limit results per group
-                "is_grouped": True
-            }
-            final_results.append(grouped_entry)
-        else:
-            # Single result - add normally but with heading info
-            result = group["results"][0]
-            result["is_grouped"] = False
-            final_results.append(result)
-        
-        # Stop if we have enough results
-        if len(final_results) >= top_k:
-            break
-    
-    return json.dumps(final_results[:top_k], indent=4)
+    return json.dumps(unique_results[:top_k], indent=4)
+
+
+#---------------------------------------------------------------------
+# -------------------------
+#LLM Pre_Final_Layer
+#--------------------------
+def llm_pre_final_layer(query, results, top=30):
+    """
+    Rerank results using the Gemma LLM via Ollama API.
+    Returns the top N results based on LLM scoring.
+    """
+    url = "http://10.101.240.7/ollama/api/generate"  # Ollama API endpoint for Gemma
+    headers = {"Content-Type": "application/json"}
+    scored_results = []
+
+    for result in results:
+        prompt = (
+            f"Query: {query}\n"
+            f"Candidate: {result['matched_sentence']}\n"
+            f"Chunk: {result['chunk']}\n"
+            "Score the candidate's relevance to the query and how well it answers the query on a scale from 0 (not relevant) to 1 (highly relevant). "
+            "Respond with only the score as a float."
+            "Also if the sentence is not meaningful or is a single phrase or proper noun assign a score of 0. "
+        )
+        data = {"model": "gemma", "prompt": prompt}
+        try:
+            response = requests.post(url, headers=headers, data=json.dumps(data), timeout=30)
+            if response.status_code == 200:
+                score_str = response.json().get("response", "0").strip()
+                try:
+                    llm_score = float(score_str)
+                except ValueError:
+                    llm_score = 0.0
+            else:
+                llm_score = 0.0
+        except Exception as e:
+            llm_score = 0.0
+
+        result['llm_score'] = llm_score
+        scored_results.append(result)
+
+    # Sort by LLM score descending and return top N
+    scored_results.sort(key=lambda x: x['llm_score'], reverse=True)
+    return scored_results[:top]
+
+'''
+
+# Load the reranker pipeline
+pipe = pipeline("feature-extraction", model="BAAI/bge-reranker-large", device=0)  # Use device=-1 for CPU
+
+def cosine_similarity(vec1, vec2):
+    """Compute cosine similarity between two vectors."""
+    v1 = np.array(vec1)
+    v2 = np.array(vec2)
+    return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-10)
+
+def llm_pre_final_layer(query, results, top=30):
+    """
+    Rerank results using BGE reranker by computing embedding similarity.
+    Returns the top N results based on cosine similarity of [CLS] embeddings.
+    """
+    scored_results = []
+
+    for result in results:
+        input_text = f"{query} [SEP] {result['matched_sentence']}"
+        # Get [CLS] embedding (assumed to be the first token vector)
+        with torch.no_grad():
+            output = pipe(input_text)
+        cls_embedding = output[0][0]  # First token of first sequence
+
+        if not isinstance(cls_embedding, (list, np.ndarray)):
+            cls_embedding = cls_embedding.tolist()
+
+        #result['llm_score'] = cosine_similarity(cls_embedding, cls_embedding)  # self-sim for debug
+        scored_results.append(result)
+
+    # Rerun with actual query embedding for proper ranking
+    with torch.no_grad():
+        query_vec = pipe(query)[0][0]
+
+    for result in scored_results:
+        candidate_vec = pipe(f"{query} [SEP] {result['matched_sentence']}")[0][0]
+        result['llm_score'] = cosine_similarity(query_vec, candidate_vec)
+
+    scored_results.sort(key=lambda x: x['llm_score'], reverse=True)
+    return scored_results[:top]
+
+'''
 
 
 
+
+#---------------------------------------------
 
 # -------------------------
 # Main Execution
 # -------------------------
 if __name__ == "__main__":
+    # queries = ["What is the organization's purpose/vision/mission?","To what extent and how does the company manage external contractors / non-permanent /temporary employees?",
+    #               "How does the organization interact with its different stakeholders (customers, users, suppliers, employees, regulators, investors, government, society)?",
+    #               "To what extent is the organization leveraging different disruptive and emerging technologies?","What are the key Metrics / KPIs / key performance indicators being tracked related to the innovation portfolio and overall business performance?",
+    #               "Does the organization tolerate failure and encourage risk-taking?"]
+    #queries = ["Growth is Life"]
+
     queries = []
     with open('questions.txt', 'r', encoding='utf-8') as file:
         for line in file:
             cleaned = line.strip()
             if cleaned:  # Skip empty lines
                 queries.append(cleaned)
-    
     for query in queries:
         print("\n============================")
         print(f"Processing query: {query}")
         print("============================")
         user_query = query
-        collection_name = "ril_pdf_pages_mpnet_heading_aware"  # Updated to match heading-aware collection
-        top_k = 30
+        collection_name = "ril_pdf_pages_semantic"
+        top_k = 50
         context_range = 2
-        print(f"[INFO] Extracting from collection: {collection_name}")
+        print(f"[INFO] Extracting from collection: {collection_name}")  # <-- Add this line
         results_json = improved_hybrid_search(user_query, collection_name, top_k, context_range)
         results = json.loads(results_json)
+
+        ##LLM Screening
+        results_final = llm_pre_final_layer(user_query, results, top=30)
         
-        print("\nTop Results (Grouped by Headings):")
+        print("\nTop Results (Ranked by Relevance):")
         # Handle context saving in the extracted_contexts.csv
-        context_file_exists = os.path.isfile("extracted_contexts_grouped.csv")
-        with open("extracted_contexts_grouped.csv", mode="a", newline="") as context_file:
+        context_file_exists = os.path.isfile("extracted_contexts12.csv")
+        with open("extracted_contexts12.csv", mode="a", newline="") as context_file:
             context_writer = csv.writer(context_file)
             if not context_file_exists:
-                context_writer.writerow(["User Query", "Heading", "Is Grouped", "Result Count", "Matched Sentence", "Context", "Page", "Document", "Score"])
+                # Modified header to show 'Chunk' instead of 'Context'
+                context_writer.writerow(["User Query", "Matched Sentence", "Chunk", "Page", "Document"])
 
-            # Process the grouped results
-            for i, result in enumerate(results):
-                if result.get("is_grouped", False):
-                    # This is a grouped result
-                    print(f"{i + 1}. GROUPED UNDER HEADING: {result['heading']}")
-                    print(f"   Number of Results: {result['result_count']}")
-                    print(f"   Best Score: {result['best_score']}")
-                    print("-" * 40)
-                    
-                    for j, sub_result in enumerate(result['grouped_results']):
-                        print(f"   {j + 1}.{i + 1} Source: {sub_result['source']} - Score: {sub_result.get('fused_score', sub_result.get('rerank_score', 0))}")
-                        print(f"       Matched Sentence: {sub_result['matched_sentence']}")
-                        print(f"       Context: {sub_result['context']}")
-                        print(f"       Document: {sub_result['document']}, Page: {sub_result['page']}")
-                        print("-" * 40)
-                        
-                        # Save to CSV
-                        context_writer.writerow([
-                            user_query,
-                            result['heading'],
-                            "Yes",
-                            result['result_count'],
-                            sub_result['matched_sentence'],
-                            sub_result['context'],
-                            sub_result['page'],
-                            sub_result['document'],
-                            sub_result.get('fused_score', sub_result.get('rerank_score', sub_result.get('score', 0)))
-                        ])
-                else:
-                    # This is a single result
-                    heading = result.get('heading_path', result.get('parent_heading', 'No Heading'))
-                    print(f"{i + 1}. Source: {result['source']} - Score: {result.get('fused_score', result.get('rerank_score', 0))}")
-                    print(f"   Heading: {heading}")
-                    print(f"   Matched Sentence: {result['matched_sentence']}")
-                    print(f"   Context: {result['context']}")
-                    print(f"   Document: {result['document']}, Page: {result['page']}")
-                    print("-" * 80)
-                    
-                    # Save to CSV
-                    context_writer.writerow([
-                        user_query,
-                        heading,
-                        "No",
-                        1,
-                        result['matched_sentence'],
-                        result['context'],
-                        result['page'],
-                        result['document'],
-                        result.get('fused_score', result.get('rerank_score', result.get('score', 0)))
-                    ])
-                
-    print(f"Processed all the queries")
+            # Now, process the results_final and extract up to 30 matched sentences for each subquery
+            for i, result in enumerate(results_final):
+                print(f"{i + 1}. Source: {result.get('source', 'N/A')} - Score: {result.get('fused_score', result.get('rerank_score', 0))}")
+                print(f"   Matched Sentence: {result['matched_sentence']}")
+                print(f"   Chunk: {result['chunk']}")  # Display chunk instead of context
+                print(f"   Document: {result['document']}, Page: {result['page']}")
+                print("-" * 80)
+
+                # Save chunk to CSV
+                context_writer.writerow([
+                    user_query,
+                    result['matched_sentence'],
+                    result['chunk'],  # Save chunk instead of context
+                    result['page'],
+                    result['document']
+                ])
+
+
+        print(f"Processed all the queries")
