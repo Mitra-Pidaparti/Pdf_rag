@@ -9,13 +9,13 @@ import spacy
 import numpy as np
 from openai import OpenAI
 from typing import List, Dict, Optional
-
+import time
 # -------------------------
 # Configuration
 # -------------------------
-INITIAL_POOL_SIZE = 200  # Large pool from BM25/TF-IDF
-DENSE_RERANK_SIZE = 100  # Top candidates after dense reranking
-FINAL_CHUNKS = 30        # Final chunks after sentence extraction
+INITIAL_POOL_SIZE = 300 # Large pool from BM25/TF-IDF
+DENSE_RERANK_SIZE = 200 # Top candidates after dense reranking
+FINAL_CHUNKS = 50    # Final chunks after sentence extraction
 DB_PATH = "chromadb"
 MODEL_NAME = 'BAAI/bge-base-en-v1.5'
 
@@ -23,7 +23,7 @@ MODEL_NAME = 'BAAI/bge-base-en-v1.5'
 # Initialize Components
 # -------------------------
 print("[INFO] Initializing components...")
-client = OpenAI(api_key=)
+client = OpenAI(api_key=
 model = SentenceTransformer(MODEL_NAME)
 client_chroma = chromadb.PersistentClient(path=DB_PATH)
 nlp = spacy.load("en_core_web_md")
@@ -189,29 +189,31 @@ def calculate_heading_hierarchy_bonus(query: str, chunk_text: str) -> float:
 # -------------------------
 def extract_relevant_sentences_with_openai(query, context_text):
     """Extract all relevant sentences from context using OpenAI."""
-    system_prompt = """You are an expert text analyzer. Your task is to extract all sentences from the context that are relevant to answering the user’s query.
+    system_prompt = """You are an expert text analyzer. Your task is to extract all that is relevant to answering the user’s query.
 
 Instructions:
 
-Return each sentence exactly as it appears in the context — do not paraphrase, rewrite, or summarize.
+Classify the chunk context whether its relevant to query(be lenient)
+  -If it is
+    -identify the parts/sections which are more relevant to the query and output it verbatim, that is, only and exactly the same wording.
+  
+  -If not,return "NONE"
 
-If multiple sentences are relevant, separate them with " | " (a vertical bar with spaces).
+."""
 
-If you're uncertain, include the sentence anyway as long as it seems possibly relevant.
-
-Only return "NONE" if no sentence is even slightly relevant after a thorough review."""
 
     user_prompt = f"Query: {query}\n\nContext: {context_text}\n\nExtract relevant sentences:"
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-2024-05-13",
+           # model="gpt-4.1",
+            model='o3',
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.1,
-            max_tokens=1000
+            #temperature=0.2,
+            #max_tokens=1500
         )
         
         extracted = response.choices[0].message.content.strip()
@@ -450,7 +452,7 @@ def enhance_with_context_features(chunks, query):
         chunk["enhanced_score"] = (
             chunk["final_score"] + 
             context_bonus + 
-            (heading_boost * 0.5)  # Heading boost weight
+            (heading_boost * 0.4)  # Heading boost weight
         )
     
     return chunks
@@ -553,9 +555,10 @@ if __name__ == "__main__":
     # Test OpenAI connection
     try:
         test_response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            #model="gpt-4.1",
+            model='o3',
             messages=[{"role": "user", "content": "Test"}],
-            max_tokens=1
+            #max_tokens=1
         )
         print("[INFO] OpenAI API connection successful")
     except Exception as e:
@@ -564,7 +567,7 @@ if __name__ == "__main__":
     
     # Load queries
     queries = []
-    with open('questions.txt', 'r', encoding='utf-8') as file:
+    with open('question.txt', 'r', encoding='utf-8') as file:
         for line in file:
             cleaned = line.strip()
             if cleaned:
@@ -576,7 +579,7 @@ if __name__ == "__main__":
     collection_name = "ril_pdf_pages_heading_semantic"
     
     # Initialize CSV file
-    csv_filename = "optimized_hybrid_search_results_heading_boostv_final.csv"
+    csv_filename = "RIL_ExhaustiveQ6.csv"
     csv_headers = [
         "User Query", "Extracted Sentences", "Chunk Context", "Page", "Heading",
         "Document", "BM25 Score", "TF-IDF Score", "Combined Lexical Score",
@@ -625,7 +628,7 @@ if __name__ == "__main__":
                 ])
         
         print(f"[INFO] Saved {len(results)} results for query: {query}")
-    
+        time.sleep(2)
     print(f"\n[INFO] Processing complete!")
     print(f"[INFO] Results saved to: {csv_filename}")
     print(f"[INFO] Total rows: {len(queries) * FINAL_CHUNKS} ({len(queries)} queries × {FINAL_CHUNKS} chunks each)")
