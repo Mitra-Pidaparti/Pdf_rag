@@ -66,7 +66,7 @@ def is_heading(line: str, next_line: Optional[str] = None) -> bool:
     # Check if it's followed by normal text (if next_line is provided)
     if next_line:
         next_line = next_line.strip()
-        if not next_line and next_line.startswith('#'):
+        if  next_line and next_line.startswith('#'):
             # Good sign - followed by normal text
             return False
     
@@ -125,8 +125,8 @@ def extract_heading_text(line: str) -> str:
 # Semantic Chunking within Sections
 # -------------------------
 
-def semantic_chunking_within_section(text: str, embedding_model, max_chunk_size: int = 200, 
-                                   similarity_threshold: float = 0.8) -> List[str]:
+def semantic_chunking_within_section(text: str, embedding_model, max_chunk_size: int = 400, 
+                                   similarity_threshold: float = 0.7) -> List[str]:
     """
     Split text into semantically coherent chunks using sentence embeddings.
     This is applied within each heading section.
@@ -228,8 +228,8 @@ def semantic_chunking_within_section(text: str, embedding_model, max_chunk_size:
 # Main Heading-Based Chunking Function
 # -------------------------
 
-def heading_based_chunking(lines: List[str], embedding_model, max_chunk_size: int = 200, 
-                         similarity_threshold: float = 0.8) -> List[Dict]:
+def heading_based_chunking(lines: List[str], embedding_model, max_chunk_size: int = 400, 
+                         similarity_threshold: float = 0.7) -> List[Dict]:
     """
     Chunk text using headings as natural boundaries, with semantic chunking within sections.
     
@@ -242,9 +242,13 @@ def heading_based_chunking(lines: List[str], embedding_model, max_chunk_size: in
     Returns:
         List[Dict]: List of chunk dictionaries with heading, text, and chunk_id
     """
+    # Create line-to-page mapping once at the beginning
+    line_to_page = create_line_to_page_mapping(lines)
+    
     chunks = []
     current_heading = None
     current_section_lines = []
+    current_section_line_indices = []
     chunk_counter = 0
     
     # Process each line
@@ -262,29 +266,34 @@ def heading_based_chunking(lines: List[str], embedding_model, max_chunk_size: in
             if current_section_lines:
                 section_text = '\n'.join(current_section_lines)
                 section_chunks = process_section(section_text, current_heading, embedding_model, 
-                                               max_chunk_size, similarity_threshold, chunk_counter)
+                                               max_chunk_size, similarity_threshold, chunk_counter,
+                                               current_section_line_indices, line_to_page)
                 chunks.extend(section_chunks)
                 chunk_counter += len(section_chunks)
             
             # Start new section
             current_heading = extract_heading_text(line)
             current_section_lines = []
+            current_section_line_indices = []
         else:
             # Add line to current section
             current_section_lines.append(line)
+            current_section_line_indices.append(i)
     
     # Process the last section
     if current_section_lines:
         section_text = '\n'.join(current_section_lines)
         section_chunks = process_section(section_text, current_heading, embedding_model, 
-                                       max_chunk_size, similarity_threshold, chunk_counter)
+                                       max_chunk_size, similarity_threshold, chunk_counter,
+                                       current_section_line_indices, line_to_page)
         chunks.extend(section_chunks)
     
     return chunks
 
 def process_section(section_text: str, heading: Optional[str], embedding_model, 
                    max_chunk_size: int, similarity_threshold: float, 
-                   chunk_counter: int) -> List[Dict]:
+                   chunk_counter: int, line_indices: List[int], 
+                   line_to_page: Dict[int, int]) -> List[Dict]:
     """
     Process a section of text under a heading, applying semantic chunking.
     
@@ -295,12 +304,17 @@ def process_section(section_text: str, heading: Optional[str], embedding_model,
         max_chunk_size: Maximum words per chunk
         similarity_threshold: Similarity threshold for semantic chunking
         chunk_counter: Starting counter for chunk IDs
+        line_indices: List of line indices for this section
+        line_to_page: Mapping from line index to page number
     
     Returns:
         List[Dict]: List of chunk dictionaries
     """
     if not section_text.strip():
         return []
+    
+    # Get page number for this section (from first line of section)
+    page_number = line_to_page[line_indices[0]] if line_indices else 1
     
     # Apply semantic chunking within this section
     text_chunks = semantic_chunking_within_section(
@@ -312,28 +326,61 @@ def process_section(section_text: str, heading: Optional[str], embedding_model,
     for i, chunk_text in enumerate(text_chunks):
         chunk_dict = {
             'chunk_id': f"chunk_{chunk_counter + i:04d}",
-            'heading': heading if heading else "Introduction",  # Default heading for text before first heading
+            'heading': heading if heading else "No Heading",
             'text': chunk_text.strip(),
             'word_count': len(chunk_text.split()),
-            'chunk_method': 'heading_semantic'
+            'chunk_method': 'heading_semantic',
+            'page_number': page_number
         }
         section_chunks.append(chunk_dict)
     
     return section_chunks
 
 
+#---------------------------
+# Function for page number for chunk
+#--------------------------
+
+
+def create_line_to_page_mapping(lines: List[str]) -> Dict[int, int]:
+    """
+    Create a mapping from line indices to page numbers by scanning the document once.
+    
+    Args:
+        lines: List of all lines from the document
+    
+    Returns:
+        Dict[int, int]: Mapping from line index to page number
+    """
+    line_to_page = {}
+    current_page = 1
+    
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if is_pageno(line):
+            # Extract the page number from the line
+            match = re.search(r'\d+', line)
+            if match:
+                current_page = int(match.group())
+        
+        line_to_page[i] = current_page
+    
+    return line_to_page
+
+
+
 # -------------------------
 # Updated Main Processing Function
 # -------------------------
 
-def process_document_with_heading_chunks(text_folder: str, collection_name: str, 
-                                       max_chunk_size, 
-                                       similarity_threshold):
+def process_document_with_heading_chunks(text_file: str, collection_name: str, 
+                                       max_chunk_size: int, 
+                                       similarity_threshold: float):
     """
-    Process documents using heading-based chunking with semantic chunking within sections.
+    Process a single document file using heading-based chunking with semantic chunking within sections.
     
     Args:
-        text_folder: Path to folder containing text files
+        text_file: Path to the text file
         collection_name: Name for the ChromaDB collection
         max_chunk_size: Maximum words per semantic chunk
         similarity_threshold: Similarity threshold for semantic chunking
@@ -345,81 +392,68 @@ def process_document_with_heading_chunks(text_folder: str, collection_name: str,
     client = chromadb.PersistentClient(path="chromadb")
     collection = client.get_or_create_collection(f"{collection_name}_heading_semantic")
     
-    # Get text files
-    txt_files = sorted(
-        [f for f in os.listdir(text_folder) if f.startswith("page_") and f.endswith(".txt")],
-        key=lambda x: int(re.search(r'\d+', x).group())
-    )
+    # Read the file
+    with open(text_file, 'r', encoding='utf-8') as file:
+        content = file.read()
+    
+    # Split into lines
+    lines = content.split('\n')
+    
+    # Apply heading-based chunking
+    chunks = heading_based_chunking(lines, embedding_model, max_chunk_size, similarity_threshold)
+    
+    if not chunks:
+        print("No chunks created from the document")
+        return
     
     total_chunks_processed = 0
     
-    with tqdm(total=len(txt_files), desc="Processing Pages") as page_bar:
-        for txt_file in txt_files:
-            page_path = os.path.join(text_folder, txt_file)
-            page_number = int(re.search(r'\d+', txt_file).group())
+    # Generate embeddings and store in ChromaDB
+    with tqdm(total=len(chunks), desc="Processing Chunks") as chunk_bar:
+        for chunk in chunks:
+            # Generate embedding for the chunk text
+            embedding = embedding_model.encode(chunk['text'], convert_to_tensor=True)
+            embedding = torch.nn.functional.normalize(embedding, p=2, dim=0)
             
-            # Read the file
-            with open(page_path, 'r', encoding='utf-8') as file:
-                content = file.read()
+            # Create unique ID
+            chunk_id = f"{collection_name}_{chunk['chunk_id']}"
             
-            # Split into lines
-            lines = content.split('\n')
+            # Metadata
+            metadata = {
+                "chunk": chunk['text'],
+                "heading": chunk['heading'],
+                "page": chunk['page_number'],
+                "document": collection_name,
+                "chunk_method": chunk['chunk_method'],
+                "chunk_size": chunk['word_count']
+            }
             
-            # Apply heading-based chunking
-            chunks = heading_based_chunking(lines, embedding_model, max_chunk_size, similarity_threshold)
+            # Add to ChromaDB
+            collection.add(
+                ids=[chunk_id],
+                embeddings=[embedding.tolist()],
+                metadatas=[metadata]
+            )
             
-            if not chunks:
-                page_bar.update(1)
-                continue
-            
-            # Generate embeddings and store in ChromaDB
-            for chunk in chunks:
-                # Generate embedding for the chunk text
-                embedding = embedding_model.encode(chunk['text'], convert_to_tensor=True)
-                embedding = torch.nn.functional.normalize(embedding, p=2, dim=0)
-                
-                # Create unique ID
-                chunk_id = f"{collection_name}_p{page_number}_{chunk['chunk_id']}"
-                
-                # Metadata
-                metadata = {
-                    "chunk": chunk['text'],
-                    "heading": chunk['heading'],
-                    "page": page_number,
-                    "document": collection_name,
-                    "chunk_method": chunk['chunk_method'],
-                    "chunk_size": chunk['word_count']
-                }
-                
-                # Add to ChromaDB
-                collection.add(
-                    ids=[chunk_id],
-                    embeddings=[embedding.tolist()],
-                    metadatas=[metadata]
-                )
-                
-                total_chunks_processed += 1
-            
-            page_bar.update(1)
+            total_chunks_processed += 1
+            chunk_bar.update(1)
     
     print(f"Heading-based semantic chunking completed!")
-    print(f"Total pages processed: {len(txt_files)}")
     print(f"Total chunks created: {total_chunks_processed}")
     print(f"Collection: {collection_name}_heading_semantic")
-
 # -------------------------
 # Execute the Processing
 # -------------------------
 
 if __name__ == "__main__":
     # Configuration
-    TEXT_FOLDER = "novartis_ocr_pages"
-    COLLECTION_NAME = Path(TEXT_FOLDER).name
+    TEXT_FILE = "combined_novartis_report\combined_novartis.txt"  # Should be a file, not folder
+    COLLECTION_NAME = Path(TEXT_FILE).stem  # Use .stem to get filename without extension
     
     # Process the documents using the main function
     process_document_with_heading_chunks(
-        text_folder=TEXT_FOLDER,
+        text_file=TEXT_FILE,  # Fixed parameter name
         collection_name=COLLECTION_NAME,
-        max_chunk_size=200,  # Match your original max_chunk_size
-        similarity_threshold=0.8  # Match your original similarity_threshold
+        max_chunk_size=400,
+        similarity_threshold=0.7
     )

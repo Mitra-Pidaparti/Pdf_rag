@@ -41,59 +41,68 @@ class SmartOCRProcessor:
             logger.error(f"Failed to analyze PDF: {e}")
             raise
 
+    logger = logging.getLogger(__name__)
+
     def process_pdf_directly(self, pdf_path: str, output_folder: str) -> None:
-            """Use Mistral OCR API for individual PDF pages and output a single combined text file."""
-            logger.info("Using page-by-page OCR method")
-            Path(output_folder).mkdir(parents=True, exist_ok=True)
+        """Use Mistral OCR API for individual PDF pages and output a single combined text file."""
+        logger.info("Using page-by-page OCR method")
+        Path(output_folder).mkdir(parents=True, exist_ok=True)
 
-            full_text = ""
+        full_text = ""
 
-            try:
-                pdf_document = fitz.open(pdf_path)
+        try:
+            pdf_document = fitz.open(pdf_path)
 
-                for page_num in range(len(pdf_document)):
-                    logger.info(f"Processing page {page_num + 1}/{len(pdf_document)}")
-                    try:
-                        single_page_pdf = fitz.open()
-                        single_page_pdf.insert_pdf(pdf_document, from_page=page_num, to_page=page_num)
+            for page_num in range(len(pdf_document)):
+                logger.info(f"Processing page {page_num + 1}/{len(pdf_document)}")
+                try:
+                    # Extract single page
+                    single_page_pdf = fitz.open()
+                    single_page_pdf.insert_pdf(pdf_document, from_page=page_num, to_page=page_num)
 
-                        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_file:
-                            single_page_pdf.save(temp_file.name)
-                            temp_path = temp_file.name
+                    # Create a temporary file safely (avoid permission issues on Windows)
+                    temp_fd, temp_path = tempfile.mkstemp(suffix=".pdf")
+                    os.close(temp_fd)  # Close file descriptor immediately
+                    single_page_pdf.save(temp_path)
+                    single_page_pdf.close()
 
-                        single_page_pdf.close()
-                        base64_pdf = self.encode_pdf(temp_path)
+                    # Encode PDF
+                    base64_pdf = self.encode_pdf(temp_path)
 
-                        response = self.client.ocr.process(
-                            model="mistral-ocr-latest",
-                            document={
-                                "type": "document_url",
-                                "document_url": f"data:application/pdf;base64,{base64_pdf}"
-                            },
-                            include_image_base64=True
-                        )
+                    # OCR request
+                    response = self.client.ocr.process(
+                        model="mistral-ocr-latest",
+                        document={
+                            "type": "document_url",
+                            "document_url": f"data:application/pdf;base64,{base64_pdf}"
+                        },
+                        include_image_base64=True
+                    )
 
-                        Path(temp_path).unlink(missing_ok=True)
+                    # Cleanup
+                    Path(temp_path).unlink(missing_ok=True)
 
-                        if response.pages and hasattr(response.pages[0], "markdown"):
-                            page_text = response.pages[0].markdown
-                            full_text += f"\n\n### Page {page_num + 1} ###\n\n{page_text.strip()}\n"
-                        else:
-                            raise ValueError("No markdown found in OCR response")
+                    # Append OCR result
+                    if response.pages and hasattr(response.pages[0], "markdown"):
+                        page_text = response.pages[0].markdown
+                        full_text += f"\n\n### Page {page_num + 1} ###\n\n{page_text.strip()}\n"
+                    else:
+                        raise ValueError("No markdown found in OCR response")
 
-                    except Exception as e:
-                        logger.error(f"Failed to process page {page_num + 1}: {e}")
-                        full_text += f"\n\n### Page {page_num + 1} - Error ###\nError processing page: {e}\n"
+                except Exception as e:
+                    logger.error(f"Failed to process page {page_num + 1}: {e}")
+                    full_text += f"\n\n### Page {page_num + 1} - Error ###\nError processing page: {e}\n"
 
-                pdf_document.close()
+            pdf_document.close()
 
-                final_path = Path(output_folder) / "output.txt"
-                final_path.write_text(full_text.strip(), encoding="utf-8")
-                logger.info(f"OCR text saved to {final_path}")
+            # Write final output
+            final_path = Path(output_folder) / "output.txt"
+            final_path.write_text(full_text.strip(), encoding="utf-8")
+            logger.info(f"OCR text saved to {final_path}")
 
-            except Exception as e:
-                logger.error(f"Failed to open or process PDF: {e}")
-                raise
+        except Exception as e:
+            logger.error(f"Failed to open or process PDF: {e}")
+            raise
 
     def fallback_process_with_images(self, pdf_path: str, output_dir="ocr_pages") -> None:
         """Fallback: convert PDF to images and OCR each image, saving all results in one text file."""
@@ -177,9 +186,9 @@ class SmartOCRProcessor:
             logger.error(f"Failed to process PDF: {e}")
 
 if __name__ == "__main__":
-    API_KEY = os.getenv("MISTRAL_API_KEY", )  # Use env var first
-    PDF_PATH = "novartis-annual-report-2024.pdf"  # Path to your PDF file
-    OUTPUT_FOLDER = "novartis_ocr_pages_one_text"  # Output folder for OCR results
+    API_KEY = os.getenv("MISTRAL_API_KEY","8AQWcztz83ZW2Anc5FHUms8DYR2JoJjR" )  # Use env var first
+    PDF_PATH = r"Mistral_OCR\novartis-integrated-report-2024.pdf"  # Path to your PDF file
+    OUTPUT_FOLDER = "novartis_ocr_integrated_report"  # Output folder for OCR results
 
     if not API_KEY:
         logger.error("Missing MISTRAL_API_KEY environment variable.")
