@@ -13,21 +13,24 @@ from typing import List, Dict, Optional
 import time
 from db_create_heading_singlepage import is_heading
 import ast  # For parsing string representations of lists
+from dotenv import load_dotenv
+import ast  # For safely evaluating string representations of lists
 
 # -------------------------
 # Configuration
 # -------------------------
-INITIAL_POOL_SIZE = 350 # Large pool from BM25/TF-IDF
-DENSE_RERANK_SIZE = 150 # Top candidates after dense reranking
-FINAL_CHUNKS = 40    # Final chunks after sentence extraction
+INITIAL_POOL_SIZE = 300#rge pool from BM25/TF-IDF
+DENSE_RERANK_SIZE =150#tes after dense reranking
+FINAL_CHUNKS = 50 # Final chunks after sentence extraction
 DB_PATH = "chromadb"
 MODEL_NAME = 'BAAI/bge-base-en-v1.5'
+load_dotenv()
 
 # -------------------------
 # Initialize Components
 # -------------------------
 print("[INFO] Initializing components...")
-client = OpenAI(api_key='
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 model = SentenceTransformer(MODEL_NAME)
 client_chroma = chromadb.PersistentClient(path=DB_PATH)
 nlp = spacy.load("en_core_web_md")
@@ -36,14 +39,11 @@ nlp = spacy.load("en_core_web_md")
 # Keywords Loading and Management
 # -------------------------
 def load_keywords_from_excel(excel_path):
-    """
-    Load keywords from Excel file mapping questions to their keywords.
-    Expected format: columns ['Question', 'Keywords']
-    """
+    """Original function with minimal changes for debugging"""
     try:
         df = pd.read_excel(excel_path)
         keywords_dict = {}
-        
+        df.columns = [col.strip() for col in df.columns]
         for _, row in df.iterrows():
             question = row['Question'].strip()
             keywords_raw = row['Keywords']
@@ -77,27 +77,56 @@ def load_keywords_from_excel(excel_path):
 
 def find_matching_keywords(query, keywords_dict):
     """
-    Find the keywords associated with a given query.
-    Uses fuzzy matching to handle slight variations in query text.
-    """ 
+    Enhanced version of find_matching_keywords with detailed debugging
+    """
+    print(f"\n[DEBUG] Finding keywords for query: '{query}'")
+    print(f"[DEBUG] Keywords dict has {len(keywords_dict)} entries")
+    
     query_lower = query.lower().strip()
+    print(f"[DEBUG] Normalized query: '{query_lower}'")
     
     # First, try exact match
-    for question, keywords in keywords_dict.items():
-        if query_lower == question.lower().strip():
-            return keywords
-    
-    # Then try partial matching
+    print(f"[DEBUG] Trying exact match...")
     for question, keywords in keywords_dict.items():
         question_lower = question.lower().strip()
-        # Check if queries are substantially similar (>80% overlap in words)
-        query_words = set(query_lower.split())
-        question_words = set(question_lower.split())
-        
-        if len(query_words.intersection(question_words)) / max(len(query_words), len(question_words)) > 0.8:
+        if query_lower == question_lower:
+            print(f"[SUCCESS] Found exact match!")
+            print(f"[DEBUG] Original question: '{question}'")
+            print(f"[DEBUG] Keywords: {keywords}")
             return keywords
     
-    print(f"[WARNING] No keywords found for query: {query}")
+    print(f"[DEBUG] No exact match found, trying partial matching...")
+    
+    # Then try partial matching
+    query_words = set(query_lower.split())
+    print(f"[DEBUG] Query words: {query_words}")
+    
+    best_match = None
+    best_score = 0
+    
+    for question, keywords in keywords_dict.items():
+        question_lower = question.lower().strip()
+        question_words = set(question_lower.split())
+        
+        # Calculate overlap
+        intersection = query_words.intersection(question_words)
+        union_size = max(len(query_words), len(question_words))
+        
+        if union_size > 0:
+            overlap_ratio = len(intersection) / union_size
+            print(f"[DEBUG] Question: '{question[:50]}...' -> Overlap: {overlap_ratio:.3f}")
+            
+            if overlap_ratio > 0.8 and overlap_ratio > best_score:
+                best_match = (question, keywords)
+                best_score = overlap_ratio
+    
+    if best_match:
+        print(f"[SUCCESS] Found partial match with score {best_score:.3f}")
+        print(f"[DEBUG] Matched question: '{best_match[0]}'")
+        print(f"[DEBUG] Keywords: {best_match[1]}")
+        return best_match[1]
+    
+    print(f"[WARNING] No matching keywords found for query: '{query}'")
     return []
 
 # -------------------------
@@ -251,13 +280,13 @@ Extract relevant content exactly as written:"""
 
     try:
         response = client.chat.completions.create(
-           # model="gpt-4.1",
+            #model="gpt-4o",
             model='o3',
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            #temperature=0.2,
+           # temperature=0.1,
             #max_tokens=1500
         )
         
@@ -653,7 +682,7 @@ def optimized_hybrid_search_with_keywords(query, keywords_list, collection_name)
     
     # STEP 5: Final ranking by ultimate score
     print(f"\n=== STEP 5: FINAL RANKING (top {FINAL_CHUNKS}) ===")
-    final_candidates.sort(key=lambda x: x["ultimate_score"], reverse=True)
+    final_candidates.sort(key=lambda x: x["semantic_score"], reverse=True)
     top_final = final_candidates[:FINAL_CHUNKS]
     
     # STEP 6: Prepare results
@@ -704,12 +733,12 @@ if __name__ == "__main__":
         exit(1)
     
     # Load keywords from Excel
-    keywords_excel_path = "novartis_keywords_by_question.xlsx"  # Update with your actual Excel file path
+    keywords_excel_path = "novartis_keywords_by_question.xlsx" #keywords file path
     keywords_dict = load_keywords_from_excel(keywords_excel_path)
     
     # Load queries
     queries = []
-    with open('question2.txt', 'r', encoding='utf-8') as file:
+    with open('question.txt', 'r', encoding='utf-8') as file:
         for line in file:
             cleaned = line.strip()
             if cleaned:

@@ -12,7 +12,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise ValueError("Error: OPENAI_API_KEY is missing in the .env file.")
 
-def generate_text(prompt: str, model: str = "o3"):  # Fixed model name
+def generate_text(prompt: str, model: str = "o3"): #model name
     """
     Sends a request to OpenAI's API using o3 and returns the generated response.
     """
@@ -28,7 +28,7 @@ def generate_text(prompt: str, model: str = "o3"):  # Fixed model name
             {"role": "system", "content": "You are an AI assistant. Provide detailed responses while preserving key terms."},
             {"role": "user", "content": prompt}
         ],
-        #"temperature": 0.1
+        #"temperature": 0.2
     }
 
     response = requests.post(url, headers=headers, data=json.dumps(data))
@@ -55,31 +55,33 @@ TASK DESCRIPTION
 Synthesize the extracted content into a concise, coherent, and executive-level narrative that directly addresses the query:
 "{query}"
 
-Ensure that:
+    Each input chunk is separated by two newlines. They are in a random order and not sequential. Do not ignore or skip any relevant chunk.
 
-    Each input chunk is evaluated for relevance to the query. Do not ignore or skip any relevant chunk. If highly relevant information is not included verbatim, ensure its core idea is faithfully and clearly represented.
+    Ensure that you:
     Preserve verbatim any critical elements including:
     - Named initiatives or programs
     - Strategic terminology (e.g., purpose statements, frameworks)
     - Specific metrics or KPIs (counts, percentages, figures)
     - Names of business units, geographies, or partners
     - Do not paraphrase these elements. Use exact wording as given.
-    - Strictly avoid hallucination. Do not infer, invent, or introduce content not explicitly present in the input. If information appears incomplete or ambiguous, flag it for review rather than guessing.
+
+Strictly avoid hallucination. Do not infer, invent, or introduce content not explicitly present in the input. If information appears incomplete or ambiguous, flag it for review rather than guessing.
+If highly relevant information is not included verbatim, ensure its core idea is faithfully and clearly represented.
+
 
 STRUCTURE -use this internally to guide the flow — NEVER include section headings in the output:
 
-
-1. STRATEGIC POSITIONING (1-2 sentences):
+1. STRATEGIC POSITIONING:
 Begin with the company's overarching philosophy or strategic stance on the topic.
 
-2. STRATEGIC RATIONALE (1-2 sentences):
+2. STRATEGIC RATIONALE:
 Explain the key drivers, motivations, or contextual factors behind the chosen approach.
 
-3. MECHANISMS & EXECUTION (4-7 sentences):
-Describe how the company operationalizes its strategy through initiatives, technologies, partnerships, and measurable outcomes.
+3. MECHANISMS & EXECUTION & INITIATIVES:
+Describe the company's initiatives, technologies, partnerships, and measurable outcomes related to the query, in a logical way.
 Include exact data (figures, percentages, names) verbatim. Merge related points to ensure clarity and flow.
 
-4. STRATEGIC BUSINESS UNITS (SBUs):(only if applicable, else ignore)
+4. STRATEGIC BUSINESS UNITS (SBUs):(only if applicable and relevant to the query, else ignore):
 - Dont include the heading, just present the information
 If multiple Strategic Business Units (SBUs) are referenced, present each SBU's input clearly, with separate summaries or segments as needed.
 
