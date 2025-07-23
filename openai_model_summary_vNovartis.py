@@ -187,7 +187,7 @@ def process_file_results(file_path):
     os.makedirs("outputs", exist_ok=True)
     
     # Create output file
-    output_file = "outputs/summary_novartisQ1v3.csv"
+    output_file = "outputs/summary_novartisQ2_nr.csv"
     file_exists = os.path.isfile(output_file)
     
     with open(output_file, mode="a", newline="", encoding='utf-8') as file:
