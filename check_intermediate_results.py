@@ -50,7 +50,7 @@ class IntermediateResultsStorage:
                 'Page': candidate.get('page', ''),
                 'Heading': candidate.get('heading', ''),
                 'Document': candidate.get('document', ''),
-                'Chunk_Preview': candidate['chunk'][:200] + '...' if len(candidate['chunk']) > 200 else candidate['chunk']
+                'Chunk_Preview': candidate['chunk'][:500] + '...' if len(candidate['chunk']) > 500 else candidate['chunk']
             })
     
     def add_dense_results(self, query, keywords, candidates):
@@ -746,7 +746,7 @@ if __name__ == "__main__":
         exit(1)
     
     # Initialize intermediate results storage
-    intermediate_excel_filename = "Novartis_intermediate_results_neural_rerank.xlsx"
+    intermediate_excel_filename = "Novartis_intermediate_results_neural_rerankQ3.xlsx"
     results_storage = IntermediateResultsStorage(intermediate_excel_filename)
     
     # Load keywords from Excel
@@ -755,7 +755,7 @@ if __name__ == "__main__":
     
     # Load queries
     queries = []
-    with open('question.txt', 'r', encoding='utf-8') as file:
+    with open('question2.txt', 'r', encoding='utf-8') as file:
         for line in file:
             cleaned = line.strip()
             if cleaned:
@@ -767,7 +767,7 @@ if __name__ == "__main__":
     collection_name = "novartis_combined_chunks_docx"
     
     # Initialize CSV file with updated headers (keeping original CSV functionality)
-    csv_filename = "Novartis_extraction_neural_rerankQ1_docx.csv"
+    csv_filename = "Novartis_intermediateQ3.csv"
     csv_headers = [
         "User Query", "Keywords", "Extracted Sentences", "Chunk Context", "Page", "Heading",
         "Document", "BM25 Score", "TF-IDF Score", "Combined Lexical Score",
