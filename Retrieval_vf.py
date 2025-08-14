@@ -15,15 +15,14 @@ from db_create_heading_singlepage import is_heading
 import ast  # For parsing string representations of lists
 from dotenv import load_dotenv
 import ast  # For safely evaluating string representations of lists
-from tqdm import tqdm
 
 # -------------------------
 # Configuration
 # -------------------------
 INITIAL_POOL_SIZE = 250 # Large pool from BM25/TF-IDF
-DENSE_RERANK_SIZE = 150# Candidates after dense reranking
-NEURAL_RERANK_SIZE = 100 # Candidates after neural reranking
-FINAL_CHUNKS = 70 # Final chunks after sentence extraction
+DENSE_RERANK_SIZE = 150 # Candidates after dense reranking
+NEURAL_RERANK_SIZE = 75 # Candidates after neural reranking
+FINAL_CHUNKS = 60 # Final chunks after sentence extraction
 DB_PATH = "chromadb"
 MODEL_NAME = 'BAAI/bge-base-en-v1.5'
 #Current
@@ -407,8 +406,8 @@ def retrieve_initial_pool_with_keywords(query, keywords_list, collection_name, p
             "page": pages[idx],
             "heading": headings[idx],
             "document": doc_ids[idx],
-            "bm25_score": bm25_scores_norm[idx],
-            "tfidf_score": tfidf_scores_norm[idx],
+            "bm25_score": bm25_scores[idx],
+            "tfidf_score": tfidf_scores[idx],
             "combined_score": combined_scores[idx],
             "index": idx
         })
@@ -457,7 +456,6 @@ def dense_rerank_candidates(query, candidates, rerank_size=DENSE_RERANK_SIZE):
     print(f"[INFO] Dense reranked to top {len(top_candidates)} candidates")
     return top_candidates
 
-'''
 # -------------------------
 # Neural Reranking with Cross-Encoder
 # -------------------------
@@ -489,8 +487,7 @@ def neural_rerank_candidates(query, candidates, rerank_size=NEURAL_RERANK_SIZE):
         
         # Add neural scores to candidates
         for i, candidate in enumerate(candidates):
-            #candidate["neural_score"] = float(cross_encoder_scores[i])
-            candidate["neural_score"] = float(cross_encoder_scores[i]) if cross_encoder_scores[i] is not None else 0.0
+            candidate["neural_score"] = float(cross_encoder_scores[i])
             # Combine with previous scores
             candidate["neural_enhanced_score"] = (
                 0.2 * candidate["combined_score"] +  # Lexical
@@ -517,7 +514,6 @@ def neural_rerank_candidates(query, candidates, rerank_size=NEURAL_RERANK_SIZE):
         print("[INFO] Falling back to dense reranking results...")
         return candidates[:rerank_size]
 
-'''
 # -------------------------
 # Enhanced Context Enhancement (Simplified - No Heading Boost)
 # -------------------------
@@ -550,146 +546,9 @@ def enhance_with_basic_context_features(chunks, query):
         chunk["context_score"] = context_bonus
         
         # Enhanced score with context bonus
-        chunk["final_enhanced_score"] = chunk["llm_rerank"] + context_bonus*0.2
+        chunk["final_enhanced_score"] = chunk["neural_enhanced_score"] + context_bonus*0.2
     
     return chunks
-
-#--------------------------# -------------------------
-# Agentic LLM Neural Reranking
-# ----------------------------------------------------
-
-
-def agentic_llm_rerank(query, candidates, client, rerank_size=None, max_chunk_len=1000, dense_rerank_size=100, verbose=True):
-    """
-    Replaces cross-encoder reranking with an agentic LLM approach.
-
-    Args:
-        query (str): User query
-        candidates (list of dicts): Candidates from dense reranker
-        client: OpenAI/other LLM client
-        rerank_size (int): Number of top candidates to return (defaults to min of 20 or len(candidates))
-        max_chunk_len (int): Limit chunk length to reduce cost
-        dense_rerank_size (int): Number of dense candidates to process
-        verbose (bool): Whether to print progress information
-
-    Returns:
-        top_candidates (list of dicts): Candidates ranked by LLM
-    """
-    
-    # Set default rerank_size if not provided
-    if rerank_size is None:
-        rerank_size = min(20, len(candidates))
-    
-    if verbose:
-        print(f"[INFO] Running Agentic LLM reranking on {len(candidates)} candidates...")
-
-    scored_candidates = []
-
-    # Only process top-k dense candidates to save cost
-    top_dense = candidates[:dense_rerank_size]
-    
-    if verbose:
-        print(f"[INFO] Processing top {len(top_dense)} dense candidates...")
-
-    # Progress bar for processing candidates
-    progress_desc = "LLM Reranking"
-    pbar = tqdm(enumerate(top_dense), 
-                total=len(top_dense), 
-                desc=progress_desc,
-                disable=not verbose,
-                unit="candidate")
-
-    for i, candidate in pbar:
-        chunk_text = candidate["chunk"]
-        
-        # Truncate long chunks
-        if len(chunk_text) > max_chunk_len:
-            chunk_text = chunk_text[:max_chunk_len] + "..."
-
-        # Construct concise agentic prompt
-        prompt = f"""You are an expert information retrieval agent. 
-Given the user query and a text chunk, score how relevant this chunk is in answering the query.
-It can be tangentially relevant, but should not be completely off-topic. The scoring should keep in mind business logic as well.
-
-Query: "{query}"
-
-Chunk: "{chunk_text}"
-
-Return a single number between 0 (irrelevant) and 1 (highly relevant).
-Return ONLY a number.
-
-Examples:
-Below are some examples of relevant chunks for questions. This is for you to understand that relevance is not limited to direct answering of the question, but can also be something related abstractly or tangentially.
-1. Query: What is the nature and focus of the organization's 'Purpose'?
-Chunk:Novartis is an innovative medicines company. Every day, we work to reimagine medicine to improve and extend people’s lives so that patients, healthcare professionals and societies are empowered in the face of serious disease. Our medicines reach 296 million people worldwide.
-Score: 1.0
-Chunk:2024 was a year of impact at Novartis. We reached nearly 300 million patients with our innovative therapies — more than ever before — as we built on the momentum from our successful transformation. We consistently delivered strong financial and operational performance, significant R&D achievements, and sustainable growth, and are well positioned to increase value for shareholders and society moving forward.
-Score: 1.0
-2.Query:To what extent are the organization's products and services information-based or information-enabled?
-Chunk:Our efforts to more efficiently align our Research, Development and Commercial organizations advanced further. Besides strategic acquisitions to increase our techno-logical capacity and broaden our pipeline, we integrated artificial intelligence more deeply into our day-to-day operations to more efficiently assess new molecules and accelerate drug development timelines.
-Score:1.0
-Chunk:Strengthen our foundations. We continue to invest in the foundations of our long-term success. We have made progress in strengthening our culture to attract and retain talent, while developing artificial intelligence capabilities across our value chain and continuing to build trust with stakeholders and society.
-Score:1.0
-"""
-
-        try:
-            response = client.chat.completions.create(
-                model="gpt-5",  # Model_name
-                messages=[{"role": "user", "content": prompt}],
-                #max_tokens=10,  # Fixed parameter name
-                #temperature=0.1  # Lower temperature for more consistent scoring
-            )
-            
-            score_text = response.choices[0].message.content.strip()
-            
-            # Improved number extraction with better regex and error handling
-            numbers = re.findall(r'\d*\.?\d+', score_text)
-            if numbers:
-                score = float(numbers[0])
-                score = max(0.0, min(score, 1.0))  # Clamp to 0-1
-            else:
-                if verbose:
-                    print(f"[WARNING] No number found in LLM response for candidate {i}: '{score_text}'")
-                score = 0.0
-                
-        except Exception as e:
-            if verbose:
-                print(f"[WARNING] LLM scoring failed for candidate {i}: {e}")
-            score = 0.0
-
-        # Update progress bar with current candidate info
-        pbar.set_postfix({
-            'score': f'{score:.3f}',
-            'chunk_len': len(candidate["chunk"])
-        })
-
-        candidate_copy = candidate.copy()
-        candidate_copy["llm_score"] = score
-        
-        # Combine with previous score (optional weighted average)
-        dense_score = candidate.get("dense_score", 0.0)
-        candidate_copy["llm_rerank"] = 0.2 * dense_score + 0.7 * score
-        scored_candidates.append(candidate_copy)
-
-    pbar.close()
-
-    # Sort by final score (descending)
-    scored_candidates.sort(key=lambda x: x["llm_rerank"], reverse=True)
-
-    # Return top N
-    top_candidates = scored_candidates[:rerank_size]
-    
-    if verbose:
-        print(f"[INFO] Agentic LLM reranked to top {len(top_candidates)} candidates")
-        if top_candidates:
-            print(f"[INFO] Top score: {top_candidates[0]['llm_rerank']:.3f}, "
-                  f"Bottom score: {top_candidates[-1]['llm_rerank']:.3f}")
-
-    return top_candidates
-
-
-
-
 
 # -------------------------
 # Main Enhanced Hybrid Search with Neural Reranking
@@ -728,8 +587,8 @@ def optimized_hybrid_search_with_neural_reranking(query, keywords_list, collecti
     
     # STEP 3: Neural reranking using cross-encoder
     print(f"\n=== STEP 3: NEURAL RERANKING (top {NEURAL_RERANK_SIZE}) ===")
-   #neural_candidates = neural_rerank_candidates(query, dense_candidates, NEURAL_RERANK_SIZE)
-    neural_candidates = agentic_llm_rerank(query,dense_candidates,client, NEURAL_RERANK_SIZE, max_chunk_len=1000)
+    neural_candidates = neural_rerank_candidates(query, dense_candidates, NEURAL_RERANK_SIZE)
+    
     # STEP 4: Basic context enhancement
     print(f"\n=== STEP 4: BASIC CONTEXT ENHANCEMENT ===")
     enhanced_candidates = enhance_with_basic_context_features(neural_candidates, query)
@@ -781,8 +640,8 @@ def optimized_hybrid_search_with_neural_reranking(query, keywords_list, collecti
             "combined_lexical_score": candidate["combined_score"],
             "semantic_score": candidate["semantic_score"],
             "dense_score": candidate["dense_score"],
-            "llm_score": candidate["llm_score"],
-            #"neural_enhanced_score": candidate["neural_enhanced_score"],
+            "neural_score": candidate["neural_score"],
+            "neural_enhanced_score": candidate["neural_enhanced_score"],
             "context_score": candidate["context_score"],
             "final_enhanced_score": candidate["final_enhanced_score"],
             "sentence_similarity": candidate["sentence_similarity"],
@@ -800,7 +659,7 @@ if __name__ == "__main__":
     # Test OpenAI connection
     try:
         test_response = client.chat.completions.create(
-            model='o4-mini',
+            model='o3',
             messages=[{"role": "user", "content": "Test"}],
         )
         print("[INFO] OpenAI API connection successful")
@@ -814,7 +673,7 @@ if __name__ == "__main__":
     
     # Load queries
     queries = []
-    with open('question.txt', 'r', encoding='utf-8') as file:
+    with open('question2.txt', 'r', encoding='utf-8') as file:
         for line in file:
             cleaned = line.strip()
             if cleaned:
@@ -823,15 +682,15 @@ if __name__ == "__main__":
     print(f"[INFO] Loaded {len(queries)} queries")
     
     # Process each query
-    #collection_name = "combined_new_novartis_page_semantic"
-    collection_name = "novartis_combined_chunks_docx" 
+    collection_name = "combined_new_novartis_page_semantic"
     
     # Initialize CSV file with updated headers
-    csv_filename = "Novartis_agentic_tryQ2.csv"
+    csv_filename = "Novartis_extraction_neural_rerankQall_new_versionv2.csv"
     csv_headers = [
         "User Query", "Keywords", "Extracted Sentences", "Chunk Context", "Page", "Heading",
         "Document", "BM25 Score", "TF-IDF Score", "Combined Lexical Score",
-        "Semantic Score", "Dense Score", "LLM Score","Context Score", "Final Enhanced Score", "Sentence Similarity", "Ultimate Score"
+        "Semantic Score", "Dense Score", "Neural Score", "Neural Enhanced Score", 
+        "Context Score", "Final Enhanced Score", "Sentence Similarity", "Ultimate Score"
     ]
     
     # Write CSV header
@@ -871,8 +730,8 @@ if __name__ == "__main__":
                             round(result["combined_lexical_score"], 4),
                             round(result["semantic_score"], 4),
                             round(result["dense_score"], 4),
-                            round(result["llm_score"], 4),
-                            #round(result["neural_enhanced_score"], 4),
+                            round(result["neural_score"], 4),
+                            round(result["neural_enhanced_score"], 4),
                             round(result["context_score"], 4),
                             round(result["final_enhanced_score"], 4),
                             round(result["sentence_similarity"], 4),
@@ -886,7 +745,7 @@ if __name__ == "__main__":
                     print(f"\n--- Result {i+1} ---")
                     print(f"Page: {result['page']}")
                     print(f"Heading: {result['heading']}")
-                    print(f"LLM Score: {result['llm_score']:.4f}")
+                    print(f"Neural Score: {result['neural_score']:.4f}")
                     print(f"Ultimate Score: {result['ultimate_score']:.4f}")
                     print(f"Extracted: {result['extracted_sentences'][:200]}...")
             
