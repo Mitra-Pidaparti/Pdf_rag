@@ -19,10 +19,10 @@ import ast  # For safely evaluating string representations of lists
 # -------------------------
 # Configuration
 # -------------------------
-INITIAL_POOL_SIZE = 250 # Large pool from BM25/TF-IDF
-DENSE_RERANK_SIZE = 150 # Candidates after dense reranking
-NEURAL_RERANK_SIZE = 75 # Candidates after neural reranking
-FINAL_CHUNKS = 60 # Final chunks after sentence extraction
+INITIAL_POOL_SIZE = 80 # Large pool from BM25/TF-IDF#200
+DENSE_RERANK_SIZE = 60# Candidates after dense reranking#150
+NEURAL_RERANK_SIZE = 40 # Candidates after neural reranking#100
+FINAL_CHUNKS = 20 # Final chunks after sentence extraction#70
 DB_PATH = "chromadb"
 MODEL_NAME = 'BAAI/bge-base-en-v1.5'
 #Current
@@ -52,7 +52,7 @@ def deduplicate_candidates(candidates, similarity_threshold=0.9):
     print(f"[INFO] Deduplicating {len(candidates)} candidates (threshold: {similarity_threshold})")
     
     # Extract chunk texts for comparison
-    chunk_texts = [candidate["chunk"] for candidate in candidates]
+    chunk_texts = [candidate.get("chunk") or candidate.get("chunk_text", "") for candidate in candidates]
     
     try:
         # Use TF-IDF vectorizer for efficient similarity computation
@@ -219,7 +219,7 @@ Extract relevant content exactly as written:"""
 
     try:
         response = client.chat.completions.create(
-            model='o3',
+            model='gpt-5-nano',
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -292,7 +292,7 @@ def retrieve_initial_pool_with_keywords(query, keywords_list, collection_name, p
     data = collection.get()
     
     # Prepare data
-    chunks = [meta.get("chunk", "") for meta in data["metadatas"]]
+    chunks = [meta.get("chunk_text", "") for meta in data["metadatas"]]
     pages = [meta.get("page", "Unknown") for meta in data["metadatas"]]
     headings = [meta.get("heading", "") for meta in data["metadatas"]]
     doc_ids = data.get("ids", ["unknown"] * len(chunks))
@@ -659,7 +659,7 @@ if __name__ == "__main__":
     # Test OpenAI connection
     try:
         test_response = client.chat.completions.create(
-            model='o3',
+            model='gpt-5-nano',
             messages=[{"role": "user", "content": "Test"}],
         )
         print("[INFO] OpenAI API connection successful")
@@ -682,10 +682,10 @@ if __name__ == "__main__":
     print(f"[INFO] Loaded {len(queries)} queries")
     
     # Process each query
-    collection_name = "combined_new_novartis_page_semantic"
+    collection_name = "novartis_collection"
     
     # Initialize CSV file with updated headers
-    csv_filename = "Novartis_extraction_neural_rerankQall_new_versionv2.csv"
+    csv_filename = "Novartis_extraction_neural_rerank_testingQ1.csv"
     csv_headers = [
         "User Query", "Keywords", "Extracted Sentences", "Chunk Context", "Page", "Heading",
         "Document", "BM25 Score", "TF-IDF Score", "Combined Lexical Score",

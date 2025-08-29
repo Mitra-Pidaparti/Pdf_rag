@@ -48,15 +48,15 @@ class AgentConfig:
     collection_name: str = "novartis_collection"
 
     # Agent loop
-    max_iters: int = 5
+    max_iters: int = 4
     coverage_stop_ratio: float = 0.90
-    min_new_evidence: int = 4
-    min_keyword_gain: int = 2
+    min_new_evidence: int = 3
+    min_keyword_gain: int = 3
     sleep_between_rounds_sec: float = 0.25
 
     # Sizing controls
-    shrink_factor_rounds_2plus: float = 1.0/2.0  # one-third sizes after round 1
-    top_k_per_round: int = 60
+    shrink_factor_rounds_2plus: float = 1/2  # one-third sizes after round 1
+    top_k_per_round: int = 40
 
     # Query refinement (optional LLM; safe fallback if key missing)
     propose_llm_queries: bool = True
